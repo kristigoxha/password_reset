@@ -1,55 +1,148 @@
+import os
+import smtplib
+import jwt
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import smtplib
-import os
-from email.mime.text import MIMEText
 from dotenv import load_dotenv
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 
+# -----------------------------------------------------------------------------
+# Load environment variables from .env (development only)
+# -----------------------------------------------------------------------------
 load_dotenv()
 
+# -----------------------------------------------------------------------------
+# Flask app & CORS configuration
+# -----------------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app, origins=["https://loveupookie.com"])
+# In production, lock this down to your real domain(s).
+# For local dev, include your frontend origin, e.g. http://localhost:3000
+CORS(app, origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")])
 
-EMAIL_ADDRESS = os.getenv("EMAIL_USER")
+# -----------------------------------------------------------------------------
+# Security & Mail configuration from environment
+# -----------------------------------------------------------------------------
+SECRET_KEY     = os.getenv("SECRET_KEY", "change_this_in_production")
+EMAIL_ADDRESS  = os.getenv("EMAIL_USER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASS")
+SMTP_SERVER    = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT      = int(os.getenv("SMTP_PORT", 465))
+FRONTEND_URL   = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
+# -----------------------------------------------------------------------------
+# Database (SQLite + SQLAlchemy)
+# -----------------------------------------------------------------------------
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///users.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db = SQLAlchemy(app)
+
+class User(db.Model):
+    id            = db.Column(db.Integer, primary_key=True)
+    email         = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+
+    def set_password(self, pw):
+        self.password_hash = generate_password_hash(pw)
+
+    def check_password(self, pw):
+        return check_password_hash(self.password_hash, pw)
+
+# -----------------------------------------------------------------------------
+# Route: Request password reset
+# -----------------------------------------------------------------------------
 @app.route("/reset-password", methods=["POST"])
-def reset_password():
-    data = request.get_json()
-    user_email = data.get("email")
+def reset_password_request():
+    data = request.get_json() or {}
+    email = data.get("email", "").strip().lower()
+    print(f"[+] Reset requested for: {email}")
 
-    if not user_email or "@" not in user_email:
-        return jsonify({"error": "Invalid email"}), 400
+    # Lookup user
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"error": "Email address not found"}), 400
 
-    reset_link = f"https://your-website.com/reset-password.html?email={user_email}"
-    subject = "Your Password Reset Link"
+    # 1) Generate a time-limited JWT (expires in 1 hour)
+    payload = {
+        "email": email,
+        "exp": datetime.utcnow() + timedelta(hours=1)
+    }
+    token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    link = f"{FRONTEND_URL}/reset.html?token={token}"
+
+    # 2) Compose the email
+    subject = "Password Reset Request"
     body = f"""
-    Hello,
+You (or someone else) requested a password reset.
 
-    Click the link below to reset your password:
-    {reset_link}
+Please click the link below to set a new password. This link will expire in one hour:
 
-    If you didn't request this, you can safely ignore this email.
+{link}
 
-    Thanks,
-    Your Website Team
-    """
+If you did not request this, simply ignore this email.
+"""
+    message = f"Subject: {subject}\n\n{body}"
 
+    # 3) Send via SMTP
     try:
-        msg = MIMEText(body)
-        msg["Subject"] = subject
-        msg["From"] = EMAIL_ADDRESS
-        msg["To"] = user_email
+        print("[*] Connecting to SMTP server...")
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as smtp:
+            smtp.set_debuglevel(1)
+            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            print(f"[*] Sending reset email to {email}")
+            smtp.sendmail(EMAIL_ADDRESS, email, message)
+        print("[+] Reset email sent successfully")
+    except Exception as err:
+        print("[-] SMTP error:", err)
+        return jsonify({"error": "Failed to send reset email"}), 500
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_ADDRESS, user_email, msg.as_string())
+    return jsonify({"message": "Password reset email sent"}), 200
 
-        return jsonify({"message": "Reset email sent!"}), 200
+# -----------------------------------------------------------------------------
+# Route: Confirm password reset
+# -----------------------------------------------------------------------------
+@app.route("/reset-password/confirm", methods=["POST"])
+def reset_password_confirm():
+    data = request.get_json() or {}
+    token        = data.get("token", "")
+    new_password = data.get("password", "")
 
-    except Exception as e:
-        print("Error:", e)
-        return jsonify({"error": "Failed to send email"}), 500
+    if not token or not new_password:
+        return jsonify({"error": "Token and new password are required"}), 400
 
+    # 1) Decode & verify token
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        email = payload.get("email")
+    except jwt.ExpiredSignatureError:
+        return jsonify({"error": "Reset token has expired"}), 400
+    except jwt.InvalidTokenError:
+        return jsonify({"error": "Invalid reset token"}), 400
+
+    # 2) Lookup user & update password
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"error": "User not found"}), 400
+
+    user.set_password(new_password)
+    db.session.commit()
+    print(f"[+] Password reset completed for: {email}")
+
+    return jsonify({"message": "Password has been reset"}), 200
+
+# -----------------------------------------------------------------------------
+# Initialize DB & optional seed user, then run the app
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    with app.app_context():
+        db.create_all()
+        # Optional: seed a test user if none exists
+        if not User.query.filter_by(email="user@example.com").first():
+            u = User(email="user@example.com")
+            u.set_password("old_password")
+            db.session.add(u)
+            db.session.commit()
+            print("[*] Seeded test user user@example.com / old_password")
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
