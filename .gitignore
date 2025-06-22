@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+venv/
+env/
+ENV/
+*.env
+
+# Environment variables
+.env
+
+# MacOS files
+.DS_Store
+
+# PyInstaller
+*.spec
+
+# VSCode and PyCharm settings
+.vscode/
+.idea/
+
+# Log files
+*.log
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
