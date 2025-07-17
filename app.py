@@ -4,26 +4,22 @@ import jwt
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
 
-# -----------------------------------------------------------------------------
-# Load environment variables from .env (development only)
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Load environment variables
+# ------------------------------------------------------------------
 load_dotenv()
 
-# -----------------------------------------------------------------------------
-# Flask app & CORS configuration
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# App configuration
+# ------------------------------------------------------------------
 app = Flask(__name__)
-# In production, lock this down to your real domain(s).
-# For local dev, include your frontend origin, e.g. http://localhost:3000
 CORS(app, origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")])
 
-# -----------------------------------------------------------------------------
-# Security & Mail configuration from environment
-# -----------------------------------------------------------------------------
+# Environment config
 SECRET_KEY     = os.getenv("SECRET_KEY", "change_this_in_production")
 EMAIL_ADDRESS  = os.getenv("EMAIL_USER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASS")
@@ -31,16 +27,17 @@ SMTP_SERVER    = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT      = int(os.getenv("SMTP_PORT", 465))
 FRONTEND_URL   = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
-# -----------------------------------------------------------------------------
-# Database (SQLite + SQLAlchemy)
-# -----------------------------------------------------------------------------
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///users.db"
+# Database config (MySQL)
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
+# ------------------------------------------------------------------
+# Models
+# ------------------------------------------------------------------
 class User(db.Model):
-    id            = db.Column(db.Integer, primary_key=True)
-    email         = db.Column(db.String(120), unique=True, nullable=False)
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
 
     def set_password(self, pw):
@@ -49,21 +46,21 @@ class User(db.Model):
     def check_password(self, pw):
         return check_password_hash(self.password_hash, pw)
 
-# -----------------------------------------------------------------------------
-# Route: Request password reset
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Routes
+# ------------------------------------------------------------------
+
 @app.route("/reset-password", methods=["POST"])
 def reset_password_request():
     data = request.get_json() or {}
     email = data.get("email", "").strip().lower()
-    print(f"[+] Reset requested for: {email}")
 
-    # Lookup user
+    print(f"[+] Reset requested for: {email}")
     user = User.query.filter_by(email=email).first()
     if not user:
         return jsonify({"error": "Email address not found"}), 400
 
-    # 1) Generate a time-limited JWT (expires in 1 hour)
+    # Generate reset token (expires in 1 hour)
     payload = {
         "email": email,
         "exp": datetime.utcnow() + timedelta(hours=1)
@@ -71,7 +68,7 @@ def reset_password_request():
     token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     link = f"{FRONTEND_URL}/reset.html?token={token}"
 
-    # 2) Compose the email
+    # Email content
     subject = "Password Reset Request"
     body = f"""
 You (or someone else) requested a password reset.
@@ -84,7 +81,7 @@ If you did not request this, simply ignore this email.
 """
     message = f"Subject: {subject}\n\n{body}"
 
-    # 3) Send via SMTP
+    # Send email
     try:
         print("[*] Connecting to SMTP server...")
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as smtp:
@@ -99,19 +96,16 @@ If you did not request this, simply ignore this email.
 
     return jsonify({"message": "Password reset email sent"}), 200
 
-# -----------------------------------------------------------------------------
-# Route: Confirm password reset
-# -----------------------------------------------------------------------------
+
 @app.route("/reset-password/confirm", methods=["POST"])
 def reset_password_confirm():
     data = request.get_json() or {}
-    token        = data.get("token", "")
+    token = data.get("token", "")
     new_password = data.get("password", "")
 
     if not token or not new_password:
         return jsonify({"error": "Token and new password are required"}), 400
 
-    # 1) Decode & verify token
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         email = payload.get("email")
@@ -120,7 +114,6 @@ def reset_password_confirm():
     except jwt.InvalidTokenError:
         return jsonify({"error": "Invalid reset token"}), 400
 
-    # 2) Lookup user & update password
     user = User.query.filter_by(email=email).first()
     if not user:
         return jsonify({"error": "User not found"}), 400
@@ -131,18 +124,21 @@ def reset_password_confirm():
 
     return jsonify({"message": "Password has been reset"}), 200
 
-# -----------------------------------------------------------------------------
-# Initialize DB & optional seed user, then run the app
-# -----------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Main entrypoint
+# ------------------------------------------------------------------
+
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
-        # Optional: seed a test user if none exists
+
+        # Optional seed user
         if not User.query.filter_by(email="user@example.com").first():
             u = User(email="user@example.com")
             u.set_password("old_password")
             db.session.add(u)
             db.session.commit()
-            print("[*] Seeded test user user@example.com / old_password")
+            print("[*] Seeded test user: user@example.com / old_password")
+
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
