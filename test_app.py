@@ -3,6 +3,7 @@ import jwt
 from datetime import datetime, timedelta
 from app import create_app, db, User
 
+# This must match the SECRET_KEY in the test config
 SECRET_KEY = "test-secret-key"
 
 @pytest.fixture
@@ -16,6 +17,7 @@ def client():
 
     with app.app_context():
         db.create_all()
+        # Seed a user into the test DB
         user = User(email="test@example.com")
         user.set_password("oldpassword")
         db.session.add(user)
@@ -51,11 +53,15 @@ def test_reset_password_confirm_valid_token(client):
         SECRET_KEY,
         algorithm="HS256"
     )
+    # Ensure token is a string (not bytes)
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
 
     res = client.post("/reset-password/confirm", json={
         "token": token,
         "password": "newpassword123"
     })
+
     print(res.data.decode())
     assert res.status_code == 200
     assert b"Password has been reset" in res.data
@@ -69,11 +75,14 @@ def test_reset_password_confirm_expired_token(client):
         SECRET_KEY,
         algorithm="HS256"
     )
+    if isinstance(expired_token, bytes):
+        expired_token = expired_token.decode("utf-8")
 
     res = client.post("/reset-password/confirm", json={
         "token": expired_token,
         "password": "anything"
     })
+    print(res.data.decode())
     assert res.status_code == 400
     assert b"Reset token has expired" in res.data
 
@@ -82,5 +91,7 @@ def test_reset_password_confirm_invalid_token(client):
         "token": "not-a-real-token",
         "password": "whatever"
     })
+
+    print(res.data.decode())
     assert res.status_code == 400
     assert b"Invalid reset token" in res.data
