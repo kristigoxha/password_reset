@@ -40,7 +40,6 @@ def create_app(test_config=None):
         app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
     app.config["SECRET_KEY"] = SECRET_KEY
-
     db.init_app(app)
 
     # -------------------- Routes --------------------
@@ -60,14 +59,18 @@ def create_app(test_config=None):
 
         link = f"{FRONTEND_URL}/reset.html?token={token}"
         subject = "Password Reset Request"
-        message = f"Subject: {subject}\n\nClick here to reset: {link}"
+        message = f"Subject: {subject}\n\nClick here to reset your password:\n{link}"
 
-        try:
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as smtp:
-                smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-                smtp.sendmail(EMAIL_ADDRESS, email, message)
-        except Exception as err:
-            return jsonify({"error": "Email send failed"}), 500
+        if app.config.get("TESTING"):
+            print("[TEST] Skipping email send.")
+        else:
+            try:
+                with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as smtp:
+                    smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+                    smtp.sendmail(EMAIL_ADDRESS, email, message)
+            except Exception as err:
+                print("[-] SMTP Error:", err)
+                return jsonify({"error": "Failed to send reset email"}), 500
 
         return jsonify({"message": "Password reset email sent"}), 200
 
@@ -77,12 +80,15 @@ def create_app(test_config=None):
         token = data.get("token", "")
         new_password = data.get("password", "")
 
+        if not token or not new_password:
+            return jsonify({"error": "Token and new password are required"}), 400
+
         try:
             payload = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
         except jwt.ExpiredSignatureError:
-            return jsonify({"error": "Token expired"}), 400
+            return jsonify({"error": "Reset token has expired"}), 400
         except jwt.InvalidTokenError:
-            return jsonify({"error": "Invalid token"}), 400
+            return jsonify({"error": "Invalid reset token"}), 400
 
         user = User.query.filter_by(email=payload.get("email")).first()
         if not user:
