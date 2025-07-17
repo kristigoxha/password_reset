@@ -16,7 +16,6 @@ EMAIL_PASSWORD = os.getenv("EMAIL_PASS")
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret")
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -33,13 +32,14 @@ def create_app(test_config=None):
     app = Flask(__name__)
     CORS(app, origins=[FRONTEND_URL])
 
+    # App configuration
     if test_config:
         app.config.update(test_config)
     else:
         app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
         app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+        app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "fallback-secret")
 
-    app.config["SECRET_KEY"] = SECRET_KEY
     db.init_app(app)
 
     # -------------------- Routes --------------------
@@ -57,12 +57,15 @@ def create_app(test_config=None):
             "exp": datetime.utcnow() + timedelta(hours=1)
         }, app.config["SECRET_KEY"], algorithm="HS256")
 
+        if isinstance(token, bytes):
+            token = token.decode("utf-8")
+
         link = f"{FRONTEND_URL}/reset.html?token={token}"
         subject = "Password Reset Request"
         message = f"Subject: {subject}\n\nClick here to reset your password:\n{link}"
 
         if app.config.get("TESTING"):
-            print("[TEST] Skipping email send.")
+            print("[TEST] Skipping email send. Token link:", link)
         else:
             try:
                 with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as smtp:
@@ -90,7 +93,8 @@ def create_app(test_config=None):
         except jwt.InvalidTokenError:
             return jsonify({"error": "Invalid reset token"}), 400
 
-        user = User.query.filter_by(email=payload.get("email")).first()
+        email = payload.get("email")
+        user = User.query.filter_by(email=email).first()
         if not user:
             return jsonify({"error": "User not found"}), 400
 

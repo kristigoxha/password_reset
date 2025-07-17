@@ -10,5 +10,4 @@ if __name__ == "__main__":
             u.set_password("old_password")
             db.session.add(u)
             db.session.commit()
-            print("[*] Seeded test user")
     app.run(debug=True)
